@@ -1,0 +1,246 @@
+# --- START MODIFICATION ---
+# Grafana — single instance with provisioned datasources + dashboards.
+# Default admin: admin / admin (CHANGE_ME for prod-like overlay via Secret).
+# Loki<->Tempo derived fields enable click-through from logs to traces by trace_id.
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: observability
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    deleteDatasources:
+      - name: Prometheus
+      - name: Loki
+      - name: Tempo
+      - name: Alertmanager
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        uid: prom
+        url: http://prometheus.observability.svc:9090
+        isDefault: true
+        jsonData:
+          timeInterval: 30s
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+      - name: Loki
+        type: loki
+        access: proxy
+        uid: loki
+        url: http://loki.observability.svc:3100
+        jsonData:
+          maxLines: 1000
+          derivedFields:
+            - name: TraceID
+              matcherRegex: "trace_id=(\\w+)"
+              url: "$${__value.raw}"
+              datasourceUid: tempo
+            - name: TraceID_json
+              matcherRegex: "\"trace_id\"\\s*:\\s*\"(\\w+)\""
+              url: "$${__value.raw}"
+              datasourceUid: tempo
+      - name: Tempo
+        type: tempo
+        access: proxy
+        uid: tempo
+        url: http://tempo.observability.svc:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: "-30m"
+            spanEndTimeShift: "30m"
+            tags:
+              - { key: "service.name", value: "service" }
+              - { key: "k8s.namespace.name", value: "namespace" }
+            filterByTraceID: true
+            filterBySpanID: false
+          tracesToMetrics:
+            datasourceUid: prom
+          serviceMap:
+            datasourceUid: prom
+          nodeGraph:
+            enabled: true
+      - name: Alertmanager
+        type: alertmanager
+        access: proxy
+        uid: alertmanager
+        url: http://alertmanager.observability.svc:9093
+        jsonData:
+          implementation: prometheus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: observability
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: "Online Boutique"
+        type: file
+        disableDeletion: false
+        editable: true
+        allowUiUpdates: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: observability
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: observability
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: observability-stack
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+      annotations:
+        # Re-roll on dashboards configmap change
+        checksum/dashboards: "v1"
+    spec:
+      securityContext:
+        fsGroup: 472
+        runAsNonRoot: true
+        runAsUser: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: "traceqlEditor,exemplars"
+            - name: GF_DIAGNOSTICS_PROFILING_ENABLED
+              value: "false"
+            - name: GF_INSTALL_PLUGINS
+              value: ""
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: observability
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 80

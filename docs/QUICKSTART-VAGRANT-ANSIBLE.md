@@ -183,6 +183,7 @@ vagrant destroy -f
 | Ansible SSH works but IPs wrong | `ip -4 addr` on each VM vs `ansible/inventory/hosts.yml`; align `VMWARE_IP_PREFIX` / `VMWARE_GATEWAY` before first `vagrant up` |
 | **`unknown flag: --all`** on `kubectl rollout` | Older `k3s kubectl`: loop deployments, e.g. `for d in $(sudo k3s kubectl get deploy -n default -o jsonpath='{.items[*].metadata.name}'); do sudo k3s kubectl rollout restart deployment/$d -n default; done` or `sudo k3s kubectl delete pods -n default --all` to force new pulls |
 | Port-forward works on VM but **connection refused** from PC | Default bind is **127.0.0.1**; use `--address 0.0.0.0` or SSH `-L` (see Step 4) |
+| Ansible hangs at **"Verify registry is responding"** | Vagrant suspend cycles can freeze the docker proxies. Fix by flushing the Docker network stack: `vagrant ssh registry-vm -c "sudo systemctl restart docker"` |
 
 ---
 

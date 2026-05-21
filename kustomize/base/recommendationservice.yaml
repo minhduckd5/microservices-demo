@@ -49,12 +49,14 @@ spec:
         readinessProbe:
           initialDelaySeconds: 20
           timeoutSeconds: 3
+          failureThreshold: 10
           periodSeconds: 5
           grpc:
             port: 8080
         livenessProbe:
           initialDelaySeconds: 20
           timeoutSeconds: 3
+          failureThreshold: 10
           periodSeconds: 5
           grpc:
             port: 8080

@@ -16,7 +16,7 @@
     - name: Wait for cloud-init to finish
       shell: |
         if command -v cloud-init >/dev/null 2>&1; then
-          timeout 300 cloud-init status --wait || true
+          timeout 900 cloud-init status --wait || true
           cloud-init status || true
         else
           echo "status: done (cloud-init not installed)"
@@ -69,8 +69,8 @@
     - name: Wait for K3s to start
       wait_for:
         port: 6443
-        delay: 5
-        timeout: 300
+        delay: 10
+        timeout: 900
 
     - name: Extract K3s node-token
       shell: cat {{ token_path }}
@@ -110,7 +110,7 @@
     - name: Wait for cloud-init on agents
       shell: |
         if command -v cloud-init >/dev/null 2>&1; then
-          timeout 300 cloud-init status --wait || true
+          timeout 900 cloud-init status --wait || true
           cloud-init status || true
         else
           echo "status: done (cloud-init not installed)"
@@ -123,7 +123,7 @@
       wait_for:
         host: "{{ k3s_apiserver_advertise_address }}"
         port: 6443
-        timeout: 300
+        timeout: 900
 
     - name: Create k3s config directory
       file:
@@ -156,8 +156,8 @@
     - name: Wait for kubelet to start
       wait_for:
         port: 10250
-        delay: 5
-        timeout: 300
+        delay: 10
+        timeout: 900
 
 - name: Verify K3s Cluster Health
   hosts: k3s_control_plane
@@ -172,7 +172,7 @@
       shell: |
         /usr/local/bin/k3s kubectl get nodes --kubeconfig={{ kubeconfig_path }} -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
       register: nodes_status
-      retries: 30
+      retries: 90
       delay: 10
       until: >
         (nodes_status.stdout_lines | select('search', '=True') | list | length)
@@ -197,3 +197,24 @@
           ✓ Nodes ready: {{ nodes_status.stdout_lines | select('search', '=True') | list | length }}/{{ expected_node_count }}
           
           Next: Run registry-vm.yml, then deploy-app.yml
+
+- name: Install Node Exporter on all K3s nodes
+  hosts: k3s_cluster
+  become: yes
+  gather_facts: yes
+  tasks:
+    # --- START MODIFICATION ---
+    # MODIFIED: Ensure node-level host metrics are available on :9100 for Prometheus
+    # (used by the VM-mode and K8s-mode observability stacks).
+    - name: Install prometheus-node-exporter
+      apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: yes
+
+    - name: Enable and start prometheus-node-exporter
+      systemd:
+        name: prometheus-node-exporter
+        state: started
+        enabled: yes
+    # --- END MODIFICATION ---

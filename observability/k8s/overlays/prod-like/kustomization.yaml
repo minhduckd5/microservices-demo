@@ -1,0 +1,112 @@
+# --- START MODIFICATION ---
+# Prod-like overlay — longer retention, namespace-scoped NetworkPolicy, Grafana over real hostname.
+# Apply with:
+#   kubectl apply -k observability/k8s/overlays/prod-like
+# --- END MODIFICATION ---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - networkpolicy.yaml
+
+# Prometheus 30d retention, larger storage; Loki 30d; tighter Grafana auth.
+patches:
+  - target:
+      kind: Deployment
+      name: prometheus
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - --config.file=/etc/prometheus/prometheus.yml
+          - --storage.tsdb.path=/prometheus
+          - --storage.tsdb.retention.time=30d
+          - --storage.tsdb.retention.size=50GB
+          - --web.enable-lifecycle
+          - --web.enable-remote-write-receiver
+          - --enable-feature=exemplar-storage
+
+  - target:
+      kind: PersistentVolumeClaim
+      name: prometheus-data
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 60Gi
+
+  - target:
+      kind: PersistentVolumeClaim
+      name: loki-data
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 100Gi
+
+  - target:
+      kind: PersistentVolumeClaim
+      name: tempo-data
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 50Gi
+
+  - target:
+      kind: ConfigMap
+      name: loki-config
+    patch: |-
+      - op: replace
+        path: /data/loki.yaml
+        value: |
+          auth_enabled: false
+          server:
+            http_listen_port: 3100
+            grpc_listen_port: 9096
+          common:
+            path_prefix: /loki
+            storage:
+              filesystem:
+                chunks_directory: /loki/chunks
+                rules_directory: /loki/rules
+            replication_factor: 1
+            ring:
+              kvstore:
+                store: inmemory
+          schema_config:
+            configs:
+              - from: 2024-01-01
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: index_
+                  period: 24h
+          limits_config:
+            retention_period: 720h
+            ingestion_rate_mb: 16
+            ingestion_burst_size_mb: 32
+            max_global_streams_per_user: 10000
+            allow_structured_metadata: true
+            volume_enabled: true
+          compactor:
+            working_directory: /loki/compactor
+            retention_enabled: true
+            retention_delete_delay: 2h
+            retention_delete_worker_count: 50
+            delete_request_store: filesystem
+          ruler:
+            storage:
+              type: local
+              local:
+                directory: /loki/rules
+            rule_path: /loki/rules-tmp
+            alertmanager_url: http://alertmanager.observability.svc:9093
+            enable_alertmanager_v2: true
+
+  - target:
+      kind: Secret
+      name: grafana-admin
+    patch: |-
+      - op: replace
+        path: /stringData/admin-password
+        value: "CHANGE_ME_BEFORE_DEPLOY"

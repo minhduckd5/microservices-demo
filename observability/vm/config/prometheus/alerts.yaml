@@ -1,0 +1,54 @@
+groups:
+  - name: golden-signals
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Target {{ $labels.job }} ({{ $labels.instance }}) is down"
+          runbook_url: "https://runbooks.local/observability/service-down"
+
+      - alert: HighHTTP5xxRate
+        expr: |
+          sum by (service_name) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+          /
+          sum by (service_name) (rate(http_server_request_duration_seconds_count[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "HTTP 5xx rate >5% on {{ $labels.service_name }}"
+
+      - alert: HighRequestLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket[5m]))) > 1.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p99 latency >1.5s on {{ $labels.service_name }}"
+
+      - alert: NodeCPUSaturation
+        expr: (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.9
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} CPU >90% for 15m"
+
+      - alert: NodeMemoryPressure
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} memory >90% used for 15m"
+
+  - name: blackbox
+    interval: 30s
+    rules:
+      - alert: BlackboxProbeFailing
+        expr: probe_success == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Blackbox probe failing for {{ $labels.instance }}"

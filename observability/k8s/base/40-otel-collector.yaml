@@ -1,0 +1,271 @@
+# --- START MODIFICATION ---
+# OpenTelemetry Collector — gateway deployment.
+# Receives OTLP (gRPC 4317 / HTTP 4318) from instrumented services.
+# - traces  -> Tempo (OTLP gRPC)
+# - metrics -> Prometheus exporter on :8889 (Prometheus scrapes; supports exemplars)
+# - logs    -> Loki via OTLP HTTP (loki ingest endpoint)
+# Tail-based sampling: keep error/slow traces, sample 10% of healthy traces.
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      # Prometheus self-scrape (collector internals)
+      prometheus/self:
+        config:
+          scrape_configs:
+            - job_name: otel-collector-self
+              scrape_interval: 30s
+              static_configs:
+                - targets: ["0.0.0.0:8888"]
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+
+      memory_limiter:
+        check_interval: 2s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Enrich every signal with k8s metadata
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: connection
+
+      # Inject standard environment label
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: "dev"
+            action: upsert
+          - key: cluster
+            value: "onprem-k3s"
+            action: upsert
+
+      # Tail-based sampling: keep all errors and slow spans, 10% of the rest
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        expected_new_traces_per_sec: 100
+        policies:
+          - name: errors
+            type: status_code
+            status_code: { status_codes: [ERROR] }
+          - name: slow
+            type: latency
+            latency: { threshold_ms: 750 }
+          - name: sample-10pct
+            type: probabilistic
+            probabilistic: { sampling_percentage: 10 }
+
+    exporters:
+      # Traces -> Tempo (OTLP gRPC)
+      otlp/tempo:
+        endpoint: tempo.observability.svc:4317
+        tls:
+          insecure: true
+
+      # Metrics -> Prometheus exporter (scraped by Prometheus on :8889)
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        send_timestamps: true
+        metric_expiration: 5m
+        enable_open_metrics: true
+        resource_to_telemetry_conversion:
+          enabled: true
+
+      # Logs -> Loki via OTLP HTTP push (Loki 3.x supports OTLP)
+      otlphttp/loki:
+        endpoint: http://loki.observability.svc:3100/otlp
+        tls:
+          insecure: true
+
+      # Debug fallback (enable on demand)
+      debug:
+        verbosity: basic
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      pprof:
+        endpoint: 0.0.0.0:1777
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, pprof, zpages]
+      telemetry:
+        metrics:
+          address: 0.0.0.0:8888
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, tail_sampling, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp, prometheus/self]
+          processors: [memory_limiter, k8sattributes, resource, batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, batch]
+          exporters: [otlphttp/loki]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: observability-stack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: otel-collector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.111.0
+          args:
+            - --config=/conf/collector.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics-self
+              containerPort: 8888
+            - name: prom-export
+              containerPort: 8889
+            - name: health
+              containerPort: 13133
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: collector.yaml
+                path: collector.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: metrics-self
+      port: 8888
+      targetPort: 8888
+    - name: prom-export
+      port: 8889
+      targetPort: 8889

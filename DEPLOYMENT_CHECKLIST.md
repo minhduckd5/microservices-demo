@@ -138,6 +138,77 @@ docker stop local-registry && docker rm local-registry
 rm ~/.kube/config-onprem
 ```
 
+## Safe suspend / resume runbook (Vagrant + K3s)
+
+<!-- MODIFIED: Add a deterministic suspend/resume procedure to prevent CNI/DNS drift after long VM sleeps. -->
+
+### Why this exists
+- `vagrant suspend` can preserve **stale kernel + network + time** state for days.
+- On resume, K3s may come up with **broken pod networking (CNI/flannel)**, which looks like “DNS is down” and causes `deploy-app.yml` to hang at rollout waits.
+
+### Pre-suspend (safe)
+Run these before `vagrant suspend` if you care about a clean resume.
+
+```bash
+# Stop Kubernetes services cleanly (prevents half-restored CNI state)
+vagrant ssh k3s-control -c "sudo systemctl stop k3s"
+vagrant ssh k3s-worker1 -c "sudo systemctl stop k3s-agent"
+vagrant ssh k3s-worker2 -c "sudo systemctl stop k3s-agent"
+
+# Optional: stop registry docker if you’ve seen docker proxy freezes
+vagrant ssh registry-vm -c "sudo systemctl stop docker"
+
+# Suspend the VMs
+cd vagrant && vagrant suspend
+```
+
+### Resume (safe)
+
+```bash
+# Resume the VMs
+cd vagrant && vagrant up
+
+# Start services (order matters: server first, then agents)
+vagrant ssh k3s-control -c "sudo systemctl start k3s"
+vagrant ssh k3s-worker1 -c "sudo systemctl start k3s-agent"
+vagrant ssh k3s-worker2 -c "sudo systemctl start k3s-agent"
+
+# Registry docker (if stopped)
+vagrant ssh registry-vm -c "sudo systemctl start docker"
+```
+
+### Post-resume validation (must pass before deploy)
+
+```bash
+# 1) Nodes Ready
+vagrant ssh k3s-control -c "sudo /usr/local/bin/k3s kubectl get nodes -o wide"
+
+# 2) CoreDNS healthy
+vagrant ssh k3s-control -c "sudo /usr/local/bin/k3s kubectl -n kube-system get pods -o wide"
+
+# 3) In-cluster DNS works (this is a symptom check, not the whole story)
+bash ops/fix-dns-failure/dns-check.sh
+
+# 4) Pod-to-pod networking sanity (stronger than DNS)
+vagrant ssh k3s-control -c "sudo /usr/local/bin/k3s kubectl -n default run net-test --image=busybox:1.36 --restart=Never -- sh -c 'wget -qO- http://kubernetes.default.svc >/dev/null && echo OK || echo FAIL'"
+vagrant ssh k3s-control -c "sudo /usr/local/bin/k3s kubectl -n default delete pod net-test --ignore-not-found=true"
+```
+
+### Recovery decision tree (fast, deterministic)
+
+- **If DNS fails but pods are reachable**: run `bash ops/fix-dns-failure/dns-heal.sh`.
+- **If pod-to-pod connectivity fails or probes time out to `10.42.x.y`** (CNI failure):
+  - Attempt one controlled restart:
+
+```bash
+vagrant ssh k3s-control -c "sudo systemctl restart k3s"
+vagrant ssh k3s-worker1 -c "sudo systemctl restart k3s-agent"
+vagrant ssh k3s-worker2 -c "sudo systemctl restart k3s-agent"
+```
+
+  - If still broken after ~5 minutes: **rebuild K3s** (lowest time-to-green for labs):
+    - run `ansible/playbooks/k3s-bootstrap.yml` again after reinstall, or destroy/recreate VMs.
+
 ## Troubleshooting Reference
 
 | Symptom | First Check | Action |
@@ -147,6 +218,7 @@ rm ~/.kube/config-onprem
 | Connection refused to K3s | Kubeconfig correct? | `export KUBECONFIG=./k3s-kubeconfig && kubectl get nodes` |
 | Kind cluster missing | Kind installed? | `kind get clusters` and reinstall if needed |
 | Port-forward fails | Service exists? | `kubectl get svc frontend` |
+| Ansible hangs at "Verify registry is responding" | Registry VM's Docker network stack frozen? | Vagrant suspend cycles can freeze docker proxies. Run `vagrant ssh registry-vm -c "sudo systemctl restart docker"` to flush the daemon network tracking. |
 | External port-forward refused | Connection refused from host PC? | Add `--address 0.0.0.0` to `kubectl port-forward` to bind to all interfaces instead of just `127.0.0.1` inside the VM. |
 | Ingress not accessible | /etc/hosts updated? | Add `192.168.1.210 boutique.internal` on the **browser PC** (control-plane IP; or `127.0.0.1` for Kind) |
 | Pods in CrashLoopBackOff | Liveness/Readiness probes timing out? | Ensure `initialDelaySeconds` (e.g., `20`) and `timeoutSeconds` (e.g., `3`) are configured in the `grpc` probe definitions to survive CPU spikes during cold starts. |

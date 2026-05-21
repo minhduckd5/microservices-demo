@@ -1,0 +1,102 @@
+# --- START MODIFICATION ---
+# Blackbox Exporter — synthetic probes (HTTP/TCP/DNS).
+# Used by Prometheus for end-to-end frontend probes and DNS resolution checks.
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-exporter-config
+  namespace: observability
+data:
+  blackbox.yml: |
+    modules:
+      http_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+          valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+          valid_status_codes: []
+          follow_redirects: true
+          fail_if_ssl: false
+          fail_if_not_ssl: false
+      tcp_connect:
+        prober: tcp
+        timeout: 5s
+      dns_resolve:
+        prober: dns
+        timeout: 5s
+        dns:
+          query_name: kubernetes.default.svc.cluster.local
+          query_type: A
+          preferred_ip_protocol: ip4
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: blackbox-exporter
+    app.kubernetes.io/part-of: observability-stack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blackbox-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blackbox-exporter
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: blackbox-exporter
+          image: prom/blackbox-exporter:v0.25.0
+          args:
+            - --config.file=/etc/blackbox/blackbox.yml
+          ports:
+            - name: http
+              containerPort: 9115
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9115
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9115
+            initialDelaySeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/blackbox
+      volumes:
+        - name: config
+          configMap:
+            name: blackbox-exporter-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackbox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: blackbox-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: blackbox-exporter
+  ports:
+    - name: http
+      port: 9115
+      targetPort: 9115

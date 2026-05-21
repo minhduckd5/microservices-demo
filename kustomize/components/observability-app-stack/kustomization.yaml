@@ -1,0 +1,306 @@
+# --- START MODIFICATION ---
+# Component: instrument Online Boutique services to ship telemetry to the new
+# in-cluster observability stack (observability namespace).
+#
+# What this component does, per service:
+#   - Sets COLLECTOR_SERVICE_ADDR, OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_SERVICE_NAME
+#     so existing app code (which already supports OTel) routes to the new gateway.
+#   - Adds OTEL_RESOURCE_ATTRIBUTES for correlation (deployment.environment, service.namespace).
+#   - Enables tracing (ENABLE_TRACING=1), keeps profiler off.
+#   - Adds prometheus.io/scrape annotations on the frontend so its native /metrics
+#     endpoint is also scraped directly (in addition to OTel-exported metrics).
+#
+# Use INSTEAD of `components/observability-onprem` when adopting the full stack.
+# Reference example:
+#   kustomize/environments/onprem/base/kustomization.yaml
+#     components:
+#       - ../../../components/observability-app-stack
+# --- END MODIFICATION ---
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  # frontend
+  - target: { kind: Deployment, name: frontend }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/scrape: "true"
+              prometheus.io/port: "8080"
+              prometheus.io/path: "/metrics"
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "frontend"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: checkoutservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: checkoutservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "checkoutservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: currencyservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: currencyservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "currencyservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: emailservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: emailservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "emailservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: paymentservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: paymentservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "paymentservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: productcatalogservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: productcatalogservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "productcatalogservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: recommendationservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: recommendationservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "recommendationservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: shippingservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: shippingservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: COLLECTOR_SERVICE_ADDR
+                    value: "otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "shippingservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+                  - name: ENABLE_TRACING
+                    value: "1"
+                  - name: ENABLE_PROFILER
+                    value: "0"
+
+  - target: { kind: Deployment, name: cartservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cartservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "cartservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+
+  - target: { kind: Deployment, name: adservice }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: adservice
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "adservice"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"
+
+  - target: { kind: Deployment, name: loadgenerator }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: loadgenerator
+      spec:
+        template:
+          spec:
+            containers:
+              - name: main
+                env:
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "http://otel-collector.observability.svc.cluster.local:4317"
+                  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    value: "grpc"
+                  - name: OTEL_SERVICE_NAME
+                    value: "loadgenerator"
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=default,deployment.environment=dev"

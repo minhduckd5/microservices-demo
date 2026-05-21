@@ -1,0 +1,459 @@
+# --- START MODIFICATION ---
+# Prometheus single-instance with kubernetes_sd discovery.
+# - Scrapes pods annotated with prometheus.io/scrape: "true".
+# - Scrapes node-exporter, kube-state-metrics, blackbox, alertmanager, otel-collector.
+# - Loads alert rules from a separate ConfigMap (mounted at /etc/prometheus/rules).
+# - Pushes alerts to Alertmanager.
+# - Retention defaults to 15 days; overlays may patch.
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/metrics", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      external_labels:
+        cluster: onprem-k3s
+        environment: dev
+
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager.observability.svc:9093"]
+
+    scrape_configs:
+      # Self
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      # Alertmanager
+      - job_name: alertmanager
+        static_configs:
+          - targets: ["alertmanager.observability.svc:9093"]
+
+      # OTel Collector (its own /metrics + the prometheus exporter pipeline)
+      - job_name: otel-collector
+        static_configs:
+          - targets:
+              - "otel-collector.observability.svc:8888"   # collector self metrics
+              - "otel-collector.observability.svc:8889"   # exported app metrics
+        metric_relabel_configs:
+          # Drop high-cardinality OTel internal label noise
+          - source_labels: [__name__]
+            regex: "otelcol_processor_batch_.*"
+            action: drop
+
+      # Node Exporter (DaemonSet, static service for simplicity)
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: ["observability"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_endpoint_node_name]
+            target_label: node
+
+      # Kube-state-metrics
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ["kube-state-metrics.observability.svc:8080"]
+
+      # Blackbox HTTP probes against the boutique frontend
+      - job_name: blackbox-http
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+              - http://frontend.default.svc.cluster.local
+              - http://frontend.default.svc.cluster.local/_healthz
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter.observability.svc:9115
+
+      # Kubernetes API server / kubelet (read-only)
+      - job_name: kubernetes-apiservers
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels:
+              [
+                __meta_kubernetes_namespace,
+                __meta_kubernetes_service_name,
+                __meta_kubernetes_endpoint_port_name,
+              ]
+            action: keep
+            regex: default;kubernetes;https
+
+      - job_name: kubernetes-nodes-cadvisor
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+
+      # Pods opting in via annotation prometheus.io/scrape: "true"
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels:
+              [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: replace
+            target_label: container
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: observability
+data:
+  alerts.yaml: |
+    groups:
+      - name: golden-signals
+        interval: 30s
+        rules:
+          - alert: ServiceDown
+            expr: up == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Target {{ $labels.job }} ({{ $labels.instance }}) is down"
+              description: "Prometheus has been unable to scrape {{ $labels.job }} for 5 minutes."
+              runbook_url: "https://runbooks.local/observability/service-down"
+
+          - alert: HighHTTP5xxRate
+            expr: |
+              sum by (service_name, job) (
+                rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m])
+              )
+              /
+              sum by (service_name, job) (
+                rate(http_server_request_duration_seconds_count[5m])
+              ) > 0.05
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "HTTP 5xx rate >5% on {{ $labels.service_name }}"
+              runbook_url: "https://runbooks.local/observability/http-5xx"
+
+          - alert: HighRequestLatencyP99
+            expr: |
+              histogram_quantile(0.99,
+                sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket[5m]))
+              ) > 1.5
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "p99 latency >1.5s on {{ $labels.service_name }}"
+              runbook_url: "https://runbooks.local/observability/latency"
+
+          - alert: PodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15 > 5
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+              runbook_url: "https://runbooks.local/observability/crashloop"
+
+          - alert: NodeCPUSaturation
+            expr: |
+              (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.9
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node {{ $labels.instance }} CPU >90% for 15m"
+
+          - alert: NodeMemoryPressure
+            expr: |
+              (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node {{ $labels.instance }} memory >90% used for 15m"
+
+          - alert: NodeDiskFillingUp
+            expr: |
+              predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[1h], 4*3600) < 0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Disk on {{ $labels.instance }} likely full within 4h"
+
+      - name: dns-and-platform
+        interval: 30s
+        rules:
+          # DNS dependency alarms — repo ships ops/fix-dns-failure healing scripts.
+          - alert: ClusterDNSDown
+            expr: |
+              sum(up{job="kubernetes-pods", k8s_app="kube-dns"}) == 0
+              or
+              absent(probe_success{job="blackbox-http"} == 1) and ON() time() > 0
+            for: 3m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Cluster DNS appears unhealthy"
+              description: "Probe failures or kube-dns/coredns endpoints not scraped. Run ops/fix-dns-failure/dns-check.sh"
+              runbook_url: "ops/fix-dns-failure/README.md"
+
+          - alert: BlackboxProbeFailing
+            expr: probe_success == 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Blackbox probe failing for {{ $labels.instance }}"
+
+      - name: alertmanager-meta
+        interval: 1m
+        rules:
+          - alert: AlertmanagerDown
+            expr: up{job="alertmanager"} == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Alertmanager is down — alerts will be lost"
+
+      - name: slo-burn-rate
+        interval: 1m
+        rules:
+          # 99.9% availability SLO on frontend HTTP, multi-window multi-burn-rate.
+          # Fast burn (1h, 14.4x) — page; Slow burn (6h, 6x) — ticket.
+          - alert: FrontendErrorBudgetBurnFast
+            expr: |
+              (
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend",http_response_status_code=~"5.."}[1h]))
+                /
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend"}[1h]))
+              ) > (14.4 * 0.001)
+              and
+              (
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend",http_response_status_code=~"5.."}[5m]))
+                /
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend"}[5m]))
+              ) > (14.4 * 0.001)
+            for: 2m
+            labels:
+              severity: critical
+              slo: frontend-availability
+            annotations:
+              summary: "Frontend burning error budget fast (>14.4x in 1h+5m)"
+              description: "At this rate, 30d budget exhausted in <2 days."
+              runbook_url: "https://runbooks.local/observability/slo-frontend"
+
+          - alert: FrontendErrorBudgetBurnSlow
+            expr: |
+              (
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend",http_response_status_code=~"5.."}[6h]))
+                /
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend"}[6h]))
+              ) > (6 * 0.001)
+              and
+              (
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend",http_response_status_code=~"5.."}[30m]))
+                /
+                sum(rate(http_server_request_duration_seconds_count{service_name="frontend"}[30m]))
+              ) > (6 * 0.001)
+            for: 15m
+            labels:
+              severity: warning
+              slo: frontend-availability
+            annotations:
+              summary: "Frontend burning error budget slowly (>6x in 6h+30m)"
+              runbook_url: "https://runbooks.local/observability/slo-frontend"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: observability
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: observability-stack
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+            - --storage.tsdb.retention.size=15GB
+            - --web.enable-lifecycle
+            - --web.enable-remote-write-receiver
+            - --enable-feature=exemplar-storage
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: data
+          persistentVolumeClaim:
+            claimName: prometheus-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090

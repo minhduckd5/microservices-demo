@@ -1,0 +1,197 @@
+# --- START MODIFICATION ---
+# Grafana dashboards bundled as a ConfigMap. JSON kept compact.
+# Three dashboards:
+#  1) Online Boutique - Golden Signals (RED method per service)
+#  2) Cluster - Node & Pod Health (uses node-exporter + kube-state-metrics)
+#  3) Logs Explorer (Loki shortcut by service)
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: observability
+data:
+  golden-signals.json: |
+    {
+      "title": "Online Boutique - Golden Signals",
+      "uid": "boutique-golden",
+      "schemaVersion": 39,
+      "version": 1,
+      "tags": ["boutique","red","slo"],
+      "timezone": "browser",
+      "time": {"from":"now-1h","to":"now"},
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "service",
+            "type": "query",
+            "datasource": {"type":"prometheus","uid":"prom"},
+            "query": "label_values(http_server_request_duration_seconds_count, service_name)",
+            "includeAll": true,
+            "multi": true,
+            "current": {"text":"All","value":"$__all"}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type":"timeseries","title":"Request Rate (RPS)","gridPos":{"x":0,"y":0,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"$service\"}[1m]))","legendFormat":"{{service_name}}"}]
+        },
+        {
+          "type":"timeseries","title":"Error Rate (5xx %)","gridPos":{"x":12,"y":0,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"100 * sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"$service\",http_response_status_code=~\"5..\"}[5m])) / sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"$service\"}[5m]))","legendFormat":"{{service_name}}"}],
+          "fieldConfig":{"defaults":{"unit":"percent"}}
+        },
+        {
+          "type":"timeseries","title":"Latency p95","gridPos":{"x":0,"y":8,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"$service\"}[5m])))","legendFormat":"p95 {{service_name}}"}],
+          "fieldConfig":{"defaults":{"unit":"s"}}
+        },
+        {
+          "type":"timeseries","title":"Latency p99","gridPos":{"x":12,"y":8,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"histogram_quantile(0.99, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"$service\"}[5m])))","legendFormat":"p99 {{service_name}}"}],
+          "fieldConfig":{"defaults":{"unit":"s"}}
+        },
+        {
+          "type":"timeseries","title":"Saturation - CPU per pod","gridPos":{"x":0,"y":16,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\"}[5m]))","legendFormat":"{{pod}}"}]
+        },
+        {
+          "type":"timeseries","title":"Saturation - Memory per pod","gridPos":{"x":12,"y":16,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum by (pod) (container_memory_working_set_bytes{namespace=\"default\"})","legendFormat":"{{pod}}"}],
+          "fieldConfig":{"defaults":{"unit":"bytes"}}
+        }
+      ]
+    }
+  cluster-health.json: |
+    {
+      "title": "Cluster - Node & Pod Health",
+      "uid": "cluster-health",
+      "schemaVersion": 39,
+      "version": 1,
+      "tags": ["cluster","k8s"],
+      "time":{"from":"now-1h","to":"now"},
+      "refresh":"30s",
+      "panels":[
+        {
+          "type":"stat","title":"Nodes Ready","gridPos":{"x":0,"y":0,"w":6,"h":4},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})"}]
+        },
+        {
+          "type":"stat","title":"Pods Running","gridPos":{"x":6,"y":0,"w":6,"h":4},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum(kube_pod_status_phase{phase=\"Running\"})"}]
+        },
+        {
+          "type":"stat","title":"Pods CrashLooping","gridPos":{"x":12,"y":0,"w":6,"h":4},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum(kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"})"}],
+          "fieldConfig":{"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"red","value":1}]}}}
+        },
+        {
+          "type":"stat","title":"Probe Failures (5m)","gridPos":{"x":18,"y":0,"w":6,"h":4},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum(probe_success == 0)"}]
+        },
+        {
+          "type":"timeseries","title":"Node CPU Utilization","gridPos":{"x":0,"y":4,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))","legendFormat":"{{instance}}"}],
+          "fieldConfig":{"defaults":{"unit":"percentunit"}}
+        },
+        {
+          "type":"timeseries","title":"Node Memory Used","gridPos":{"x":12,"y":4,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes","legendFormat":"{{instance}}"}],
+          "fieldConfig":{"defaults":{"unit":"percentunit"}}
+        },
+        {
+          "type":"timeseries","title":"Pod Restarts (15m)","gridPos":{"x":0,"y":12,"w":24,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum by (namespace, pod) (rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15)","legendFormat":"{{namespace}}/{{pod}}"}]
+        }
+      ]
+    }
+  trace-explorer.json: |
+    {
+      "title": "Traces - Service Explorer",
+      "uid": "trace-explorer",
+      "schemaVersion": 39,
+      "version": 1,
+      "tags": ["traces","tempo"],
+      "time": {"from":"now-1h","to":"now"},
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "service",
+            "type": "query",
+            "datasource": {"type":"prometheus","uid":"prom"},
+            "query": "label_values(traces_service_graph_request_total, server)",
+            "includeAll": true,
+            "multi": true,
+            "current": {"text":"All","value":"$__all"}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type":"nodeGraph","title":"Service Graph","gridPos":{"x":0,"y":0,"w":24,"h":12},
+          "datasource":{"type":"tempo","uid":"tempo"},
+          "targets":[{"queryType":"serviceMap","refId":"A"}]
+        },
+        {
+          "type":"timeseries","title":"Span Rate by Service (RED)","gridPos":{"x":0,"y":12,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"sum by (service) (rate(traces_spanmetrics_calls_total{service=~\"$service\"}[1m]))","legendFormat":"{{service}}"}]
+        },
+        {
+          "type":"timeseries","title":"Span Latency p95","gridPos":{"x":12,"y":12,"w":12,"h":8},
+          "datasource":{"type":"prometheus","uid":"prom"},
+          "targets":[{"expr":"histogram_quantile(0.95, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{service=~\"$service\"}[5m])))","legendFormat":"p95 {{service}}"}],
+          "fieldConfig":{"defaults":{"unit":"s"}}
+        },
+        {
+          "type":"table","title":"Recent Errored Spans","gridPos":{"x":0,"y":20,"w":24,"h":10},
+          "datasource":{"type":"tempo","uid":"tempo"},
+          "targets":[{"queryType":"traceql","query":"{ status = error }","refId":"A","limit":50}]
+        }
+      ]
+    }
+  logs-explorer.json: |
+    {
+      "title": "Logs Explorer",
+      "uid": "logs-explorer",
+      "schemaVersion": 39,
+      "version": 1,
+      "tags": ["logs","loki"],
+      "time":{"from":"now-1h","to":"now"},
+      "refresh":"30s",
+      "templating":{
+        "list":[
+          {
+            "name":"service","type":"query",
+            "datasource":{"type":"loki","uid":"loki"},
+            "query":"label_values({namespace=\"default\"}, app)",
+            "includeAll":true,"multi":true,"current":{"text":"All","value":"$__all"}
+          }
+        ]
+      },
+      "panels":[
+        {
+          "type":"logs","title":"Application Logs (default ns)","gridPos":{"x":0,"y":0,"w":24,"h":18},
+          "datasource":{"type":"loki","uid":"loki"},
+          "targets":[{"expr":"{namespace=\"default\", app=~\"$service\"}"}],
+          "options":{"showTime":true,"wrapLogMessage":true,"prettifyLogMessage":false,"enableLogDetails":true}
+        }
+      ]
+    }

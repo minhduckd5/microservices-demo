@@ -1,0 +1,156 @@
+# --- START MODIFICATION ---
+# Vagrant/Ansible secondary path: full observability stack on a single VM
+# (registry-vm by default — it already has Docker and is reachable from K3s
+# nodes via 192.168.1.220).
+#
+# Parity with the K8s stack:
+#   - Same images and major versions.
+#   - Same Prometheus rules, Grafana dashboards, OTel pipeline shape.
+#   - Same correlation contract (trace_id, service.name, environment).
+#
+# Endpoints exposed on the VM:
+#   3000 Grafana         | 9090 Prometheus     | 9093 Alertmanager
+#   3100 Loki            | 3200 Tempo          | 4317/4318 OTel Collector
+#   8888/8889 Collector telemetry & app metrics
+#   9100 Node Exporter   | 9115 Blackbox
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/observability-vm.yml
+# --- END MODIFICATION ---
+networks:
+  obs:
+    driver: bridge
+
+volumes:
+  prom_data:
+  alertmanager_data:
+  loki_data:
+  tempo_data:
+  grafana_data:
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: obs-prometheus
+    restart: unless-stopped
+    networks: [obs]
+    ports: ["9090:9090"]
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alerts.yaml:/etc/prometheus/rules/alerts.yaml:ro
+      - prom_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=15GB
+      - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: obs-alertmanager
+    restart: unless-stopped
+    networks: [obs]
+    ports: ["9093:9093"]
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: obs-loki
+    restart: unless-stopped
+    networks: [obs]
+    ports: ["3100:3100"]
+    volumes:
+      - ./config/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/loki.yaml
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: obs-tempo
+    restart: unless-stopped
+    networks: [obs]
+    ports:
+      - "3200:3200"
+      - "4319:4317"   # OTLP gRPC for direct producers (rare)
+    volumes:
+      - ./config/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    command: -config.file=/etc/tempo/tempo.yaml
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: obs-otel-collector
+    restart: unless-stopped
+    networks: [obs]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # collector self metrics
+      - "8889:8889"   # exported app metrics (Prometheus scrape target)
+    volumes:
+      - ./config/otel/collector.yaml:/conf/collector.yaml:ro
+    command: ["--config=/conf/collector.yaml"]
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: obs-promtail
+    restart: unless-stopped
+    networks: [obs]
+    volumes:
+      - ./config/promtail/promtail.yaml:/etc/promtail/promtail.yaml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/promtail.yaml
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: obs-grafana
+    restart: unless-stopped
+    networks: [obs]
+    ports: ["3000:3000"]
+    volumes:
+      - ./config/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./config/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor,exemplars
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: obs-node-exporter
+    restart: unless-stopped
+    networks: [obs]
+    pid: host
+    ports: ["9100:9100"]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+)($$|/)
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: obs-blackbox-exporter
+    restart: unless-stopped
+    networks: [obs]
+    ports: ["9115:9115"]
+    volumes:
+      - ./config/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    command: --config.file=/etc/blackbox/blackbox.yml

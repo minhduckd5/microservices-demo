@@ -1,0 +1,157 @@
+---
+# --- START MODIFICATION ---
+# VM-mode observability stack (parity with the K8s package under
+# observability/k8s/). Deploys Prometheus + Loki + Tempo + Grafana +
+# Alertmanager + OTel Collector + Promtail + node/blackbox exporters
+# on registry-vm using docker compose.
+#
+# Run:
+#   ansible-playbook -i inventory/hosts.yml playbooks/observability-vm.yml
+# Optional: choose a different host group with --extra-vars 'obs_target=registry'
+# --- END MODIFICATION ---
+- name: Deploy VM-mode observability stack
+  hosts: "{{ obs_target | default('registry') }}"
+  become: yes
+  gather_facts: yes
+  vars:
+    obs_root: /opt/observability
+    obs_repo_path: "{{ playbook_dir }}/../../observability/vm"
+    obs_compose_project: observability
+  tasks:
+    - name: Ensure docker is installed and running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # --- START MODIFICATION ---
+    # MODIFIED: Some VM images have Docker but not Compose v2 plugin.
+    # Install docker-compose-plugin where possible and fall back to docker-compose v1.
+    - name: Check docker compose v2 plugin
+      shell: docker compose version
+      register: compose_v2_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install docker compose v2 plugin (apt) when missing
+      apt:
+        name: docker-compose-plugin
+        state: present
+        update_cache: yes
+      when: compose_v2_check.rc != 0
+      register: compose_plugin_apt
+      failed_when: false
+
+    - name: Re-check docker compose v2 plugin
+      shell: docker compose version
+      register: compose_v2_recheck
+      changed_when: false
+      failed_when: false
+
+    - name: Check docker-compose v1 binary (fallback)
+      shell: docker-compose version
+      register: compose_v1_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install docker-compose v1 (apt) when needed as fallback
+      apt:
+        name: docker-compose
+        state: present
+        update_cache: yes
+      when: compose_v2_recheck.rc != 0 and compose_v1_check.rc != 0
+      register: compose_v1_apt
+      failed_when: false
+
+    # MODIFIED: If neither compose package exists in apt repos, install Compose v2 as a CLI plugin directly.
+    - name: Ensure docker cli plugins directory exists
+      file:
+        path: /usr/local/lib/docker/cli-plugins
+        state: directory
+        mode: "0755"
+      when: compose_v2_recheck.rc != 0 and compose_v1_check.rc != 0
+
+    - name: Install Docker Compose v2 plugin (direct download) when apt has no packages
+      get_url:
+        url: >-
+          https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-{{
+            'x86_64' if ansible_facts['architecture'] in ['x86_64', 'amd64'] else
+            'aarch64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else
+            ansible_facts['architecture']
+          }}
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        mode: "0755"
+      when: compose_v2_recheck.rc != 0 and compose_v1_check.rc != 0
+
+    - name: Re-check docker compose after direct install
+      shell: docker compose version
+      register: compose_v2_final
+      changed_when: false
+      failed_when: false
+
+    - name: Select compose command
+      set_fact:
+        obs_compose_cmd: >-
+          {{
+            'docker compose'
+            if (compose_v2_final.rc == 0 or compose_v2_recheck.rc == 0 or compose_v2_check.rc == 0)
+            else 'docker-compose'
+          }}
+
+    - name: Fail if no compose implementation is available
+      fail:
+        msg: >-
+          Neither `docker compose` (v2 plugin) nor `docker-compose` (v1) is available on this host.
+          Install `docker-compose-plugin` or `docker-compose`.
+      when: obs_compose_cmd not in ['docker compose', 'docker-compose']
+    # --- END MODIFICATION ---
+
+    - name: Create observability root directory
+      file:
+        path: "{{ obs_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Sync compose stack to VM
+      synchronize:
+        src: "{{ obs_repo_path }}/"
+        dest: "{{ obs_root }}/"
+        delete: yes
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=*.swp"
+      register: sync_result
+
+    - name: Pull images
+      shell: "{{ obs_compose_cmd }} pull"
+      args:
+        chdir: "{{ obs_root }}"
+      register: pull_result
+      changed_when: "'Downloaded' in pull_result.stdout"
+
+    - name: Bring stack up
+      shell: "{{ obs_compose_cmd }} -p {{ obs_compose_project }} up -d"
+      args:
+        chdir: "{{ obs_root }}"
+      register: up_result
+
+    - name: Wait for Grafana
+      uri:
+        url: "http://localhost:3000/api/health"
+        status_code: 200
+      register: grafana_health
+      retries: 20
+      delay: 5
+      until: grafana_health.status == 200
+
+    - name: Display endpoints
+      debug:
+        msg: |
+          Observability stack on {{ inventory_hostname }} ({{ ansible_host }}):
+            Grafana       http://{{ ansible_host }}:3000  (admin/admin)
+            Prometheus    http://{{ ansible_host }}:9090
+            Alertmanager  http://{{ ansible_host }}:9093
+            Loki          http://{{ ansible_host }}:3100
+            Tempo         http://{{ ansible_host }}:3200
+            OTel OTLP     {{ ansible_host }}:4317 (gRPC) / :4318 (HTTP)
+          Point app workloads at OTEL_EXPORTER_OTLP_ENDPOINT=http://{{ ansible_host }}:4317

@@ -55,11 +55,13 @@ spec:
         readinessProbe:
           initialDelaySeconds: 20
           timeoutSeconds: 3
+          failureThreshold: 10
           grpc:
             port: 7000
         livenessProbe:
           initialDelaySeconds: 20
           timeoutSeconds: 3
+          failureThreshold: 10
           grpc:
             port: 7000
         resources:

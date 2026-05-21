@@ -1,0 +1,15 @@
+# --- START MODIFICATION ---
+# Dedicated observability namespace for platform stack.
+# Apps continue to live in `default`. Cross-namespace traffic is allowed by
+# default in k3s (no NetworkPolicy enforced unless components/network-policies
+# is composed). For prod-like overlay we additionally apply a NetworkPolicy.
+# --- END MODIFICATION ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    name: observability
+    app.kubernetes.io/part-of: observability-stack
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
