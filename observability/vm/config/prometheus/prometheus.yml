@@ -54,8 +54,8 @@ scrape_configs:
   - job_name: vm-node-exporters
     static_configs:
       - targets:
-          - "192.168.1.210:9100"   # k3s-control
-          - "192.168.1.211:9100"   # k3s-worker1
-          - "192.168.1.212:9100"   # k3s-worker2
+          - "192.168.31.210:9100"   # k3s-control
+          - "192.168.31.211:9100"   # k3s-worker1
+          - "192.168.31.212:9100"   # k3s-worker2
         labels:
           fleet: k3s-vms

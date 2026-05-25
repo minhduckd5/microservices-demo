@@ -8,10 +8,10 @@ unchanged when migrating between modes.
 
 ## Topology
 
-Default deploy target: **registry-vm** (192.168.1.220). It already has Docker
-installed by `playbooks/registry-vm.yml`, is reachable from the K3s nodes, and
-does not run app workloads. Override with
-`--extra-vars 'obs_target=<inventory_group>'`.
+Default deploy target: **registry-vm** (192.168.1.220 for local Vagrant, or **192.168.31.220** for Proxmox VE). It already has Docker installed by `playbooks/registry-vm.yml`, is reachable from the K3s nodes, and does not run app workloads. Override with `--extra-vars 'obs_target=<inventory_group>'`.
+
+> [!TIP]
+> **Custom Subnets (Proxmox / LAN):** If your LAN or PVE range is different (e.g. `192.168.31.x`), ensure you replace `192.168.1.x` with your actual IPs in `config/prometheus/prometheus.yml` under static targets so Prometheus can scrape the node exporters successfully!
 
 ```
 [Apps on K3s nodes / Compose VMs]
@@ -51,8 +51,8 @@ Initial credentials: `admin / admin`. Rotate immediately for non-demo use
 
 Set on every microservice (whether running in K3s or directly on the VMs):
 
-```
-OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.1.220:4317
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://<registry-vm-ip>:4317   # e.g., 192.168.31.220 for Proxmox VE
 OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 OTEL_RESOURCE_ATTRIBUTES=service.name=<svc>,service.namespace=default,environment=dev,cluster=onprem-vm
 ENABLE_TRACING=1
@@ -81,3 +81,31 @@ For VM-mode deployments, set them in your unit/compose files.
 | Grafana datasources              | prom/loki/tempo with derived fields    | identical                                 |
 | Dashboards                       | 4 (golden, cluster, logs, traces)      | 1 starter (extend by copying ConfigMap)   |
 | Alert rules                      | golden + DNS + SLO burn-rate           | golden + blackbox                         |
+
+## Accessing Logs & Exporting Data
+
+### Viewing Logs (Loki in Grafana)
+Loki acts as the log storage engine, but Grafana is your query interface:
+1. Open Grafana (`http://<registry-vm-ip>:3000`).
+2. Go to the **Explore** tab (compass icon on the left sidebar).
+3. Select **Loki** from the datasource dropdown.
+4. Query logs using LogQL (e.g. `{service="frontend"}`).
+
+### Data Persistence (Verification)
+All metrics, logs, and traces are persisted to Docker named volumes on the `registry-vm` disk:
+* Metrics: `observability_prom_data`
+* Logs: `observability_loki_data`
+* Traces: `observability_tempo_data`
+
+To verify database size and storage growth on-disk, SSH into `registry-vm` and run:
+```bash
+sudo du -sh /var/lib/docker/volumes/observability_prom_data/_data
+sudo du -sh /var/lib/docker/volumes/observability_loki_data/_data
+```
+
+### Exporting Data for Analysis & Research (e.g. Thesis)
+If you need to analyze raw telemetry data (e.g. for anomaly detection or research):
+* **Grafana Export**: In the **Explore** tab, run a query, click **Query Inspector** -> **Data** -> **Download CSV**.
+* **REST APIs**: Query the databases directly using Python/R via HTTP GET requests:
+  * Prometheus: `http://<registry-vm-ip>:9090/api/v1/query_range?query=<metric>`
+  * Loki: `http://<registry-vm-ip>:3100/loki/api/v1/query_range?query=<logql>`

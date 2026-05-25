@@ -1,0 +1,43 @@
+#cloud-config
+# Custom Cloud-Init configuration for Online Boutique on-prem VM
+hostname: ${hostname}
+fqdn: ${hostname}.local
+manage_etc_hosts: true
+
+users:
+  - name: vagrant
+    gecos: Vagrant User
+    primary_group: vagrant
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_key}
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - qemu-guest-agent
+  - curl
+  - wget
+  - git
+  - vim
+  - net-tools
+  - kmod
+  - docker.io
+
+runcmd:
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, qemu-guest-agent ]
+  - [ systemctl, start, --no-block, qemu-guest-agent ]
+  - [ systemctl, enable, docker ]
+  - [ systemctl, start, --no-block, docker ]
+  - [ usermod, -aG, docker, vagrant ]
+  # Static host configuration to ensure cluster name resolution works cleanly without external DNS
+  - grep -qE '^${ip_prefix}\.210\s+k3s-control(\s|$)' /etc/hosts || echo "${ip_prefix}.210 k3s-control" >> /etc/hosts
+  - grep -qE '^${ip_prefix}\.211\s+k3s-worker1(\s|$)' /etc/hosts || echo "${ip_prefix}.211 k3s-worker1" >> /etc/hosts
+  - grep -qE '^${ip_prefix}\.212\s+k3s-worker2(\s|$)' /etc/hosts || echo "${ip_prefix}.212 k3s-worker2" >> /etc/hosts
+  - grep -qE '^${ip_prefix}\.220\s+registry\.local(\s|$)' /etc/hosts || echo "${ip_prefix}.220 registry.local" >> /etc/hosts
+  - grep -qE '^${ip_prefix}\.210\s+boutique\.internal(\s|$)' /etc/hosts || echo "${ip_prefix}.210 boutique.internal" >> /etc/hosts

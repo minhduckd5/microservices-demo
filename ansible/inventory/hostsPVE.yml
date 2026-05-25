@@ -1,0 +1,84 @@
+# Ansible Inventory for Online Boutique On-Prem Deployment
+# Groups VMs by role (control-plane, workers, registry)
+#
+# Run from repo root (see ansible.cfg inventory=…). Do NOT use -i ",/ansible/…" —
+# that points at /ansible on the filesystem root and loads zero hosts.
+#
+# SSH: Vagrantfile sets insert_key=false — there is often NO per-machine private_key
+# under vagrant/.vagrant/machines/…/. See inventory/group_vars/all.yml (insecure_private_key
+# or VAGRANT_INSECURE_KEY when Ansible runs in WSL but Vagrant ran on Windows).
+#
+# Network: Keep ansible_host, k3s_apiserver_advertise_address, and registry_ip in sync with
+# Vagrant static IPs (VMWARE_IP_PREFIX + octets in vagrant/Vagrantfile). If your bridged LAN
+# is e.g. 192.168.0.0/24, set VMWARE_IP_PREFIX=192.168.0, VMWARE_GATEWAY=192.168.0.1 before
+# vagrant up, then replace 192.168.1.x below with 192.168.0.x consistently.
+
+all:
+  hosts:
+    k3s-control:
+      ansible_host: 192.168.31.210
+      ansible_user: vagrant
+      type: control
+    
+    k3s-worker1:
+      ansible_host: 192.168.31.211
+      ansible_user: vagrant
+      type: worker
+    
+    k3s-worker2:
+      ansible_host: 192.168.31.212
+      ansible_user: vagrant
+      type: worker
+    
+    registry-vm:
+      ansible_host: 192.168.31.220
+      ansible_user: vagrant
+      registry_port: 5000
+
+  children:
+    k3s_cluster:
+      hosts:
+        k3s-control:
+        k3s-worker1:
+        k3s-worker2:
+
+    k3s_control_plane:
+      hosts:
+        k3s-control:
+
+    k3s_agents:
+      hosts:
+        k3s-worker1:
+        k3s-worker2:
+
+    registry:
+      hosts:
+        registry-vm:
+
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+    # K3s variables
+    k3s_version: "v1.30.0+k3s1"  # Latest stable; adjust as needed
+    k3s_release_channel: stable
+    
+    # Network
+    k3s_apiserver_advertise_address: 192.168.31.210
+    k3s_apiserver_bind_port: 6443
+    
+    # Registry
+    # MODIFIED: Must match Vagrant's registry-vm static IP
+    registry_ip: 192.168.31.220
+    registry_port: 5000
+    registry_url: "registry.local:5000"
+    
+    # Paths
+    kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+    token_path: /var/lib/rancher/k3s/server/node-token
+    
+    # Image configuration — tags must match kustomize/base manifests after
+    # components/container-images-registry rewrites the registry prefix only.
+    container_images_registry: "{{ registry_url }}/microservices-demo"
+    kustomize_env: "onprem/k3s"
+    microservices_image_tag: "v0.10.5"
+    redis_image_tag: "alpine"

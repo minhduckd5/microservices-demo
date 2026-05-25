@@ -11,7 +11,10 @@
 #   chmod 600 "$VAGRANT_INSECURE_KEY"
 ansible_ssh_private_key_file: >-
   {{
-    lookup('ansible.builtin.env', 'VAGRANT_INSECURE_KEY')
+    lookup('ansible.builtin.env', 'PROXMOX_PRIVATE_KEY')
+    | default(lookup('ansible.builtin.env', 'HOME') ~ '/.ssh/id_rsa', true)
+    | default('/mnt/c/Users/A/.ssh/id_rsa', true)
+    | default(lookup('ansible.builtin.env', 'VAGRANT_INSECURE_KEY'), true)
     | default(lookup('ansible.builtin.env', 'HOME') ~ '/.vagrant.d/insecure_private_key', true)
   }}
 # --- END MODIFICATION ---

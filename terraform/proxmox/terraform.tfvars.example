@@ -1,0 +1,26 @@
+# Proxmox VE API Credentials
+# Replace with your Proxmox VE IP/domain and API Token.
+proxmox_api_endpoint = "https://192.168.1.100:8006/"
+proxmox_api_token    = "root@pam!token_name=token_uuid"
+proxmox_insecure     = true
+proxmox_node         = "pve"
+
+# Proxmox VE SSH Credentials (Required for cloud-init snippet uploads)
+# If using ssh-agent locally, set proxmox_ssh_agent to true and keep the password empty.
+# If not using ssh-agent, provide the root password directly.
+proxmox_ssh_agent    = true
+proxmox_ssh_username = "root"
+proxmox_ssh_password = ""
+
+# Storage and Networking configuration
+disk_datastore = "HDD-LVM" # Target storage for VM disk (LVM, LVM-thin, etc.)
+network_bridge = "vmbr0"   # Network bridge connected to your physical LAN
+
+# Static IP prefix and gateway configuration
+# Ensure these map correctly to your local home network range!
+ip_prefix   = "192.168.1"
+gateway_ip  = "192.168.1.1"
+dns_servers = ["8.8.8.8", "1.1.1.1"]
+
+# Path to your local SSH public key to be installed on VM guests ('vagrant' user)
+ssh_public_key_path = "~/.ssh/id_rsa.pub"

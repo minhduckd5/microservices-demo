@@ -135,6 +135,17 @@
         chdir: "{{ obs_root }}"
       register: up_result
 
+    # --- START MODIFICATION ---
+    # MODIFIED: When single config files are synced, their file inodes change on the host VM.
+    # Docker single-file mounts continue pointing to the old inodes unless explicitly recreated.
+    # Force recreate these containers if the sync task registered changes.
+    - name: Force-recreate containers on configuration updates to clear Docker volume inode cache
+      shell: "{{ obs_compose_cmd }} -p {{ obs_compose_project }} up -d --force-recreate prometheus otel-collector alertmanager loki tempo promtail"
+      args:
+        chdir: "{{ obs_root }}"
+      when: sync_result.changed
+    # --- END MODIFICATION ---
+
     - name: Wait for Grafana
       uri:
         url: "http://localhost:3000/api/health"

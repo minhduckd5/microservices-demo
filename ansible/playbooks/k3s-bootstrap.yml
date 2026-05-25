@@ -8,6 +8,75 @@
 # Run: ansible-playbook -i inventory/hosts.yml playbooks/k3s-bootstrap.yml
 
 ---
+- name: Baseline VM Package & Network Provisioning (All Nodes)
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Wait for cloud-init to finish
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          timeout 900 cloud-init status --wait || true
+          cloud-init status || true
+        else
+          echo "status: done (cloud-init not installed)"
+        fi
+      register: cloud_init_result
+      changed_when: false
+      failed_when: false
+
+    - name: Install baseline system packages
+      apt:
+        name:
+          - qemu-guest-agent
+          - docker.io
+          - curl
+          - wget
+          - git
+          - vim
+          - net-tools
+          - kmod
+        state: present
+        update_cache: yes
+      retries: 5
+      delay: 10
+      register: apt_result
+      until: apt_result is success
+
+    - name: Ensure Docker baseline service is running and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Ensure QEMU Guest Agent is running and enabled (if supported by virtualization host)
+      systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Add vagrant user to docker group
+      user:
+        name: vagrant
+        groups: docker
+        append: yes
+
+    - name: Inject local /etc/hosts static routing dynamically
+      lineinfile:
+        path: /etc/hosts
+        state: present
+        regexp: '^.*\s+{{ item }}(\s|$)'
+        line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+      loop: "{{ groups['all'] }}"
+
+    - name: Inject boutique.internal routing mapping
+      lineinfile:
+        path: /etc/hosts
+        state: present
+        regexp: '^.*\s+boutique\.internal(\s|$)'
+        line: "{{ hostvars['k3s-control']['ansible_host'] }} boutique.internal"
+
 - name: Bootstrap K3s Control-Plane on Single Node
   hosts: k3s_control_plane
   become: yes

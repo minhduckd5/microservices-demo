@@ -178,6 +178,8 @@ ansible-playbook -i inventory/hosts.yml playbooks/k3s-bootstrap.yml --check
 | K3s install fails | Internet connectivity | Check VM internet access: `vagrant ssh k3s-control -- curl -I https://get.k3s.io` |
 | Registry not reachable from nodes | DNS issue | Verify `/etc/hosts` entries on all nodes: `vagrant ssh k3s-control -- cat /etc/hosts` |
 | Deployment fails with `ImagePullBackOff` | Images not built/pushed | Re-run deploy-app.yml with extra verbosity |
+| **WSL SSH private key permission error** (`0777` too open) | Windows mounts `/mnt/c/` in WSL default to 777 permissions, which OpenSSH rejects. | Copy your key into WSL home: `mkdir -p ~/.ssh && cp /mnt/c/Users/A/.ssh/id_rsa ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa` (Ansible automatically checks `~/.ssh/id_rsa` first!). |
+| **QEMU Guest Agent service fails to start** (PVE only) | The VM setting `agent.enabled = false` is active in Proxmox VE (disables guest agent serial port). | Either enable it in Terraform `agent { enabled = true }` followed by a **VM cold boot (stop/start)** in PVE, or set `ignore_errors: yes` on the agent service task in the playbook. |
 
 ## Next Steps
 
